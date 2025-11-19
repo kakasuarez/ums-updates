@@ -34,6 +34,6 @@ class Scraper:
             current_notice_title = current_notice.title
             if current_notice_title == self.last_seen_notice:
                 if new_notices:
-                    self.last_seen_notice = new_notices[0]
+                    self.last_seen_notice = new_notices[0].title
                 return new_notices
             new_notices.append(current_notice)

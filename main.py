@@ -4,10 +4,13 @@ from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
 )
+from dotenv import load_dotenv
 import os
 from scrape import Scraper
 
-last_seen_notice = "JOINT PLAN OF END SUMMER SEM EXAMINATION TO BE HELD ON 22/07/2024 (FN) .NOTE : DETAINED STUDENTS ARE NOT ALLOWED IN THAT SEMESTER"
+last_seen_notice = (
+    "Extended Library Timings and use of common areas during End-Semester Examinations"
+)
 
 
 async def callback_notices(context: ContextTypes.DEFAULT_TYPE):
@@ -26,7 +29,7 @@ async def callback_notices(context: ContextTypes.DEFAULT_TYPE):
                 text=message_to_be_sent,
                 parse_mode="MarkdownV2" if notice.url else None,
             )
-        last_seen_notice = new_notices[0]
+        last_seen_notice = new_notices[0].title
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -37,6 +40,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
+    load_dotenv()
     TOKEN = os.environ.get("BOT_TOKEN")
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
