@@ -9,7 +9,7 @@ import os
 from scrape import Scraper
 
 last_seen_notice = (
-    "Extended Library Timings and use of common areas during End-Semester Examinations"
+    "MBA Major Project Mentor Allocation"
 )
 
 
@@ -20,9 +20,9 @@ async def callback_notices(context: ContextTypes.DEFAULT_TYPE):
     if new_notices:
         for notice in new_notices:
             message_to_be_sent = (
-                f"[{notice.escaped_title()}]({notice.url})"
+                f"New notice on IMS: [{notice.escaped_title()}]({notice.url})"
                 if notice.url
-                else notice.title
+                else "New notice on IMS: " + notice.title
             )
             await context.bot.send_message(
                 chat_id=context.job.chat_id,
@@ -44,6 +44,7 @@ def main() -> None:
     TOKEN = os.environ.get("BOT_TOKEN")
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    print("The bot is running!")
     app.run_polling()
 
 
