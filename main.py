@@ -70,7 +70,7 @@ async def branch_selected(update: Update, context: CallbackContext):
         f"Subscribed to {branch}\nYou will now receive updates automatically. Use `/start` again to add more departments."
     )
 
-    logger.info(f"User {user.id} subscribed to {branch}")
+    logger.info(f"User {query.from_user.id} subscribed to {branch}")
 
 
 async def scrape_and_fanout(context: CallbackContext):
