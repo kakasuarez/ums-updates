@@ -10,6 +10,7 @@ import os
 import logging
 from scrape import Scraper, get_all_branches
 from logging_config import setup_logging
+from database_handling import DatabaseHandler
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,6 @@ async def start(update: Update, context: CallbackContext) -> None:
     logger.info(f"User {user.id} ({user.username}) started bot")
 
     branches = context.application.bot_data["branches"]
-    context.chat_data.setdefault("subscriptions", set())
 
     await update.effective_message.reply_text(
         "Choose the department you want to subscribe to:",
@@ -37,23 +37,16 @@ async def start(update: Update, context: CallbackContext) -> None:
 
 async def stop(update: Update, context: CallbackContext):
     chat_id = update.effective_chat.id
-    subs = context.application.bot_data.get("subscriptions", {})
 
-    removed = False
-    for branch, chats in subs.items():
-        if chat_id in chats:
-            chats.remove(chat_id)
-            removed = True
+    db = context.application.bot_data["db"]
 
-    if removed:
-        await update.effective_message.reply_text(
-            "You have been unsubscribed from all departments."
-        )
-        logger.info(f"User {chat_id} unsubscribed from all departments")
-    else:
-        await update.effective_message.reply_text(
-            "You were not subscribed to any department."
-        )
+    db.remove_subscription(chat_id)
+    context.application.bot_data["subscriptions"] = db.load_subscriptions()
+
+    await update.effective_message.reply_text(
+        "You have been unsubscribed from all departments."
+    )
+    logger.info(f"User {chat_id} unsubscribed from all departments")
 
 
 async def branch_selected(update: Update, context: CallbackContext):
@@ -63,8 +56,9 @@ async def branch_selected(update: Update, context: CallbackContext):
     branch = query.data
     chat_id = query.message.chat_id
 
-    subs = context.application.bot_data.setdefault("subscriptions", {})
-    subs.setdefault(branch, set()).add(chat_id)
+    db = context.application.bot_data["db"]
+    db.save_subscription(chat_id, branch)
+    context.application.bot_data["subscriptions"] = db.load_subscriptions()
 
     await query.edit_message_text(
         f"Subscribed to {branch}\nYou will now receive updates automatically. Use `/start` again to add more departments."
@@ -82,12 +76,13 @@ async def scrape_and_fanout(context: CallbackContext):
     for branch, scraper in scrapers.items():
         try:
             notices = scraper.get_all_notices()
-            last_seen = cursors.get(branch)
-            if last_seen is None:
-                if notices:
-                    cursors[branch] = notices[0].id if notices else None
+            if branch not in cursors:
+                if subscriptions.get(branch):
+                    if notices:
+                        cursors[branch] = notices[0].id
                 continue
 
+            last_seen = cursors[branch]
             new = []
             for notice in notices:
                 if notice.id == last_seen:
@@ -127,6 +122,12 @@ async def post_init(app):
     )
 
 
+async def post_shutdown(app):
+    db = app.bot_data.get("db")
+    if db:
+        db.close()
+
+
 async def error_handler(update: Update, context: CallbackContext):
     logger.error(
         f"Update {update} caused error: {context.error}", exc_info=context.error
@@ -136,16 +137,30 @@ async def error_handler(update: Update, context: CallbackContext):
 def main() -> None:
     load_dotenv()
     setup_logging()
+    db = DatabaseHandler()
     logger.info("Starting notification bot")
     TOKEN = os.environ.get("BOT_TOKEN")
     url = "https://www.imsnsit.org/imsnsit/notifications.php"
     branches = get_all_branches(url)
     SCRAPERS = {branch: Scraper(branch) for branch in branches}
-    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
     app.add_error_handler(error_handler)
+    app.bot_data["db"] = db
     app.bot_data["branches"] = branches
     app.bot_data["scrapers"] = SCRAPERS
-    app.bot_data["subscriptions"] = {}
+    subs = db.load_subscriptions()
+    app.bot_data["subscriptions"] = subs
+    logger.info(
+        "Loaded %d subscriptions across %d branches",
+        sum(len(v) for v in subs.values()),
+        len(subs),
+    )
     app.bot_data["branch_last_seen"] = {}
 
     app.add_handler(CommandHandler("start", start))
