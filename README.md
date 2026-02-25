@@ -12,3 +12,4 @@ Setup:
 - `source .venv/bin/activate`
 - `pip install -r requirements.txt`
 - Copy `.env.example` to `.env` and add the environment variables.
+- Set `ENV=development` to add debugging commands.
