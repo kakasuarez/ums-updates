@@ -8,7 +8,7 @@ from telegram.ext import (
 from dotenv import load_dotenv
 import os
 import logging
-from scrape import Scraper, get_all_branches
+from scrape import Scraper, get_all_branches, DownloadError
 from logging_config import setup_logging
 from database_handling import DatabaseHandler
 
@@ -97,20 +97,42 @@ async def scrape_and_fanout(context: CallbackContext):
 
             for chat_id in subscriptions.get(branch, set()):
                 for notice in reversed(new):
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"New notice on IMS: "
-                            f"[{notice.escaped_title()}]({notice.url})"
-                            if notice.url
-                            else notice.title
-                        ),
-                        parse_mode="MarkdownV2" if notice.url else None,
-                    )
+                    if not notice.url:
+                        await context.bot.send_message(
+                            chat_id=chat_id, text=notice.title
+                        )
+                        continue
+                    try:
+                        pdf_bytes = notice.download()
+                        filename = notice.safe_filename()
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=pdf_bytes,
+                            filename=filename,
+                            caption=notice.title,
+                        )
+                    except DownloadError as e:
+                        logger.warning(f"Failed to download notice {notice.id}: {e}")
+
             subscriber_count = len(subscriptions.get(branch, set()))
             logger.info(f"Sent {len(new)} notices to {subscriber_count} subscribers")
         except Exception as e:
             logger.error(f"Error scraping {branch}: {e}", exc_info=True)
+
+
+async def testpdf(update: Update, context: CallbackContext):
+    scraper = context.application.bot_data["scrapers"][
+        context.application.bot_data["branches"][0]
+    ]
+
+    scraper.refresh_documents()
+    notice = scraper.get_all_notices()[0]
+
+    pdf_bytes = notice.download()
+
+    await update.effective_chat.send_document(
+        document=pdf_bytes, filename="test.pdf", caption="PDF test successful"
+    )
 
 
 async def post_init(app):
@@ -166,6 +188,9 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(branch_selected))
     app.add_handler(CommandHandler("stop", stop))
+    environment = os.environ.get("ENV")
+    if environment == "development":
+        app.add_handler(CommandHandler("testpdf", testpdf))
     logger.info("Bot is now running and polling for updates")
     app.run_polling()
 

@@ -7,6 +7,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class DownloadError(Exception):
+    pass
+
+
 class Notice:
     def __init__(self, row):
         self.text = row.text
@@ -27,6 +31,25 @@ class Notice:
     def _make_id(self):
         base = self.title
         return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+    def download(self):
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.imsnsit.org/imsnsit/notifications.php",
+        }
+        if not self.url:
+            raise DownloadError("This notice does not have a download URL")
+        pdf_resp = requests.get(self.url, headers=headers)
+        content_type = pdf_resp.headers.get("Content-type", "").lower()
+        if "pdf" not in content_type:
+            raise DownloadError(
+                f"Expected PDF, got {content_type} (status {pdf_resp.status_code})"
+            )
+        return pdf_resp.content
+
+    def safe_filename(self) -> str:
+        name = re.sub(r"[^\w\-. ]", "_", self.title)
+        return name.strip()[:120] + ".pdf"
 
 
 class Scraper:
