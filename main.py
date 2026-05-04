@@ -11,6 +11,7 @@ import logging
 from scrape import Scraper, get_all_branches, DownloadError
 from logging_config import setup_logging
 from database_handling import DatabaseHandler
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -72,18 +73,20 @@ async def scrape_and_fanout(context: CallbackContext):
     scrapers = bot_data["scrapers"]
     subscriptions = bot_data["subscriptions"]
     cursors = bot_data["branch_last_seen"]
+    db = bot_data["db"]
 
     for branch, scraper in scrapers.items():
         try:
             notices = scraper.get_all_notices()
+
             if branch not in cursors:
-                if subscriptions.get(branch):
-                    if notices:
-                        cursors[branch] = notices[0].id
+                if subscriptions.get(branch) and notices:
+                    cursors[branch] = notices[0].id
                 continue
 
             last_seen = cursors[branch]
             new = []
+
             for notice in notices:
                 if notice.id == last_seen:
                     break
@@ -95,27 +98,48 @@ async def scrape_and_fanout(context: CallbackContext):
             logger.info(f"Found {len(new)} new notice(s) for {branch}")
             cursors[branch] = new[0].id
 
-            for chat_id in subscriptions.get(branch, set()):
-                for notice in reversed(new):
+            for notice in reversed(new):
+                notice_detected_at = time.time()
+
+                # compute latency once per notice (not per user)
+                try:
                     if not notice.url:
-                        await context.bot.send_message(
-                            chat_id=chat_id, text=notice.title
-                        )
+                        send_time = time.time()
+                        latency = send_time - notice_detected_at
+                        db.incr_metric("latency_total", latency)
+                        db.incr_metric("latency_count")
+
+                        for chat_id in subscriptions.get(branch, set()):
+                            await context.bot.send_message(
+                                chat_id=chat_id, text=notice.title
+                            )
+                            db.incr_metric("messages_sent")
                         continue
-                    try:
-                        pdf_bytes = notice.download()
-                        filename = notice.safe_filename()
+
+                    pdf_bytes = notice.download()
+                    filename = notice.safe_filename()
+
+                    send_time = time.time()
+                    latency = send_time - notice_detected_at
+
+                    db.incr_metric("latency_total", latency)
+                    db.incr_metric("latency_count")
+
+                    for chat_id in subscriptions.get(branch, set()):
                         await context.bot.send_document(
                             chat_id=chat_id,
                             document=pdf_bytes,
                             filename=filename,
                             caption=notice.title,
                         )
-                    except DownloadError as e:
-                        logger.warning(f"Failed to download notice {notice.id}: {e}")
+                        db.incr_metric("messages_sent")
+
+                except DownloadError as e:
+                    logger.warning(f"Failed to download notice {notice.id}: {e}")
 
             subscriber_count = len(subscriptions.get(branch, set()))
             logger.info(f"Sent {len(new)} notices to {subscriber_count} subscribers")
+
         except Exception as e:
             logger.error(f"Error scraping {branch}: {e}", exc_info=True)
 
