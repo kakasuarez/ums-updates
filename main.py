@@ -23,16 +23,30 @@ def branch_keyboard(branches):
     return InlineKeyboardMarkup(keyboard)
 
 
+async def send_with_latency(db, send_coro):
+    send_started_at = time.time()
+    try:
+        return await send_coro
+    finally:
+        latency = time.time() - send_started_at
+        db.incr_metric("latency_total", latency)
+        db.incr_metric("latency_count")
+
+
 async def start(update: Update, context: CallbackContext) -> None:
 
     user = update.effective_user
     logger.info(f"User {user.id} ({user.username}) started bot")
 
     branches = context.application.bot_data["branches"]
+    db = context.application.bot_data["db"]
 
-    await update.effective_message.reply_text(
-        "Choose the department you want to subscribe to:",
-        reply_markup=branch_keyboard(branches),
+    await send_with_latency(
+        db,
+        update.effective_message.reply_text(
+            "Choose the department you want to subscribe to:",
+            reply_markup=branch_keyboard(branches),
+        ),
     )
 
 
@@ -44,8 +58,11 @@ async def stop(update: Update, context: CallbackContext):
     db.remove_subscription(chat_id)
     context.application.bot_data["subscriptions"] = db.load_subscriptions()
 
-    await update.effective_message.reply_text(
-        "You have been unsubscribed from all departments."
+    await send_with_latency(
+        db,
+        update.effective_message.reply_text(
+            "You have been unsubscribed from all departments."
+        ),
     )
     logger.info(f"User {chat_id} unsubscribed from all departments")
 
@@ -61,8 +78,11 @@ async def branch_selected(update: Update, context: CallbackContext):
     db.save_subscription(chat_id, branch)
     context.application.bot_data["subscriptions"] = db.load_subscriptions()
 
-    await query.edit_message_text(
-        f"Subscribed to {branch}\nYou will now receive updates automatically. Use `/start` again to add more departments."
+    await send_with_latency(
+        db,
+        query.edit_message_text(
+            f"Subscribed to {branch}\nYou will now receive updates automatically. Use `/start` again to add more departments."
+        ),
     )
 
     logger.info(f"User {query.from_user.id} subscribed to {branch}")
@@ -74,6 +94,9 @@ async def scrape_and_fanout(context: CallbackContext):
     subscriptions = bot_data["subscriptions"]
     cursors = bot_data["branch_last_seen"]
     db = bot_data["db"]
+
+    db.incr_metric("scrape_cycles")
+    total_new_notices = 0
 
     for branch, scraper in scrapers.items():
         try:
@@ -89,6 +112,7 @@ async def scrape_and_fanout(context: CallbackContext):
 
             for notice in notices:
                 if notice.id == last_seen:
+                    db.incr_metric("duplicate_notices")
                     break
                 new.append(notice)
 
@@ -97,21 +121,17 @@ async def scrape_and_fanout(context: CallbackContext):
 
             logger.info(f"Found {len(new)} new notice(s) for {branch}")
             cursors[branch] = new[0].id
+            total_new_notices += len(new)
 
             for notice in reversed(new):
-                notice_detected_at = time.time()
-
-                # compute latency once per notice (not per user)
                 try:
                     if not notice.url:
-                        send_time = time.time()
-                        latency = send_time - notice_detected_at
-                        db.incr_metric("latency_total", latency)
-                        db.incr_metric("latency_count")
-
                         for chat_id in subscriptions.get(branch, set()):
-                            await context.bot.send_message(
-                                chat_id=chat_id, text=notice.title
+                            await send_with_latency(
+                                db,
+                                context.bot.send_message(
+                                    chat_id=chat_id, text=notice.title
+                                ),
                             )
                             db.incr_metric("messages_sent")
                         continue
@@ -119,18 +139,15 @@ async def scrape_and_fanout(context: CallbackContext):
                     pdf_bytes = notice.download()
                     filename = notice.safe_filename()
 
-                    send_time = time.time()
-                    latency = send_time - notice_detected_at
-
-                    db.incr_metric("latency_total", latency)
-                    db.incr_metric("latency_count")
-
                     for chat_id in subscriptions.get(branch, set()):
-                        await context.bot.send_document(
-                            chat_id=chat_id,
-                            document=pdf_bytes,
-                            filename=filename,
-                            caption=notice.title,
+                        await send_with_latency(
+                            db,
+                            context.bot.send_document(
+                                chat_id=chat_id,
+                                document=pdf_bytes,
+                                filename=filename,
+                                caption=notice.title,
+                            ),
                         )
                         db.incr_metric("messages_sent")
 
@@ -143,6 +160,14 @@ async def scrape_and_fanout(context: CallbackContext):
         except Exception as e:
             logger.error(f"Error scraping {branch}: {e}", exc_info=True)
 
+    if total_new_notices:
+        db.incr_metric("notices_found", total_new_notices)
+
+    scrape_cycles = db.get_metric("scrape_cycles")
+    notices_found = db.get_metric("notices_found")
+    if scrape_cycles:
+        db.set_metric("notices_per_scrape_cycle", notices_found / scrape_cycles)
+
 
 async def testpdf(update: Update, context: CallbackContext):
     scraper = context.application.bot_data["scrapers"][
@@ -153,9 +178,13 @@ async def testpdf(update: Update, context: CallbackContext):
     notice = scraper.get_all_notices()[0]
 
     pdf_bytes = notice.download()
+    db = context.application.bot_data["db"]
 
-    await update.effective_chat.send_document(
-        document=pdf_bytes, filename="test.pdf", caption="PDF test successful"
+    await send_with_latency(
+        db,
+        update.effective_chat.send_document(
+            document=pdf_bytes, filename="test.pdf", caption="PDF test successful"
+        ),
     )
 
 
